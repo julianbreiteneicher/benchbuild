@@ -1,7 +1,9 @@
+"""
+Playground for new reactive actions testing.
+"""
 #%%
 import logging
-import multiprocessing as mp
-import threading
+import sys
 
 import rx
 from rx import operators as op
@@ -11,9 +13,10 @@ from benchbuild.experiments import raw
 from benchbuild.projects.benchbuild.bzip2 import Bzip2
 from benchbuild.projects.benchbuild.linpack import Linpack
 from benchbuild.projects.test.test import TestProject, TestProjectRuntimeFail
-from benchbuild.utils.rx.actions import (Action, ActionStatus,
-                                         observable_experiment, clean,
-                                         compile_, echo, mkdir_, run_)
+from benchbuild.utils.rx.actions import (Action, ActionStatus, clean, compile_,
+                                         echo, mkdir_, observable_experiment,
+                                         run_)
+from benchbuild.utils.rx.processscheduler import ProcessPoolScheduler
 
 RAW = raw.RawRuntime()
 PRJ = TestProject(RAW)
@@ -33,16 +36,26 @@ def log_error(error):
 def log_action(actn: Action, index):
     prj_or_exp = actn.action_obj
     if prj_or_exp:
-        LOG.info("#{} * {}: {}".format(index, prj_or_exp.name, str(actn)))
+        LOG.info("#%s * %s: %s" % (index, prj_or_exp.name, str(actn)))
     return actn
 
 
-def run_action(actn: Action):
+def run_action(actn: Action, index):
     try:
         res = actn()
-    except Exception as a:
+    except ProcessExecutionError as proc_ex:
+        log_error(proc_ex)
         res = ActionStatus.ERROR
-        log_error(a)
+    except KeyboardInterrupt:
+        LOG.info("User requested termination.")
+        #action.onerror()
+        raise
+    except OSError:
+        LOG.error(
+            "Exception in step #%d: %s",
+            index,
+            str(actn),
+            exc_info=sys.exc_info())
 
     return res
 
@@ -70,8 +83,8 @@ actions_linpack = action_sequence(LINPACK)
 actions_bzip2 = action_sequence(BZIP)
 actions_bad = action_sequence(PRJ_FAIL)
 
-sched = rx.concurrency.CurrentThreadScheduler()
-
+sched = ProcessPoolScheduler(4)
+#sched = rx.concurrency.CurrentThreadScheduler()
 #sched = rx.concurrency.ThreadPoolScheduler()
 
 
@@ -79,7 +92,7 @@ def create_experiment_pipe(experiment, actions):
     return rx.create(observable_experiment(experiment, actions)).pipe(
         op.subscribe_on(sched), \
         op.map_indexed(log_action), \
-        op.map(run_action), \
+        op.map_indexed(run_action), \
         op.map(to_status), \
         op.filter(lambda res: res != ActionStatus.OK))
 
@@ -91,5 +104,6 @@ all_exps = rx.merge(
 
 all_exps.subscribe(
     on_next=lambda a: print("Failed, with result: ", a),
-    on_error=lambda e: print(e))
+    on_error=print)
+
 input("Press any key to continue...")
